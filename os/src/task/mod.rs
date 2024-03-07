@@ -14,12 +14,13 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM, SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{TaskControlBlock, TaskStatus, IDTimesPair};
 
 pub use context::TaskContext;
 
@@ -51,9 +52,20 @@ lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
         let num_app = get_num_app();
+        let id_list : [usize; SYSCALL_NUM] = [64, 93, 124, 169, 410];
+        let id_times_pairs: [IDTimesPair; SYSCALL_NUM] = [
+            IDTimesPair { syscall_id: id_list[0], syscall_times: 0 },
+            IDTimesPair { syscall_id: id_list[1], syscall_times: 0 },
+            IDTimesPair { syscall_id: id_list[2], syscall_times: 0 },
+            IDTimesPair { syscall_id: id_list[3], syscall_times: 0 },
+            IDTimesPair { syscall_id: id_list[4], syscall_times: 0 },
+        ];
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            first_call_time: 0,
+            first_call: true,
+            id_times_pairs: id_times_pairs,
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -80,6 +92,10 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        if task0.first_call {
+            task0.first_call = false;
+            task0.first_call_time = get_time_ms();
+        }
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -122,6 +138,10 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].first_call {
+                inner.tasks[next].first_call_time = get_time_ms();
+                inner.tasks[next].first_call = false;
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -134,6 +154,32 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn get_time_segment(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let current_time = get_time_ms();
+        let time_segment = current_time - inner.tasks[current].first_call_time;
+        time_segment
+    }
+
+    /// update syscall times by id 
+    fn update_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        for pair in inner.tasks[current].id_times_pairs.iter_mut() {
+            if pair.syscall_id == syscall_id {
+                pair.syscall_times += 1;
+                break;
+            }
+        }
+    }
+    /// and return syscall times
+    fn get_syscall_times(&self) -> [IDTimesPair; SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].id_times_pairs
     }
 }
 
@@ -168,4 +214,25 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// return current task time segment
+pub fn get_time_segment() -> usize {
+    TASK_MANAGER.get_time_segment()
+}
+
+/// return syscall times
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    let mut syscall_times: [u32;MAX_SYSCALL_NUM] = [0;MAX_SYSCALL_NUM];
+    let manager_syscall_times = TASK_MANAGER.get_syscall_times();
+    for each in manager_syscall_times.iter() {
+        let index = each.syscall_id;
+        syscall_times[index] = each.syscall_times;
+    }
+    syscall_times
+}
+
+/// update syscall times
+pub fn update_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.update_syscall_times(syscall_id);
 }
