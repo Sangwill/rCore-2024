@@ -9,12 +9,12 @@ fn main() {
     insert_app_data().unwrap();
 }
 
-static TARGET_PATH: &str = "../user/build/elf/";
+static TARGET_PATH: &str = "../ci-user/user/build/elf/";
 
 /// get app data and build linker
 fn insert_app_data() -> Result<()> {
     let mut f = File::create("src/link_app.S").unwrap();
-    let mut apps: Vec<_> = read_dir("../user/build/elf/")
+    let mut apps: Vec<_> = read_dir("../ci-user/user/build/elf")
         .unwrap()
         .into_iter()
         .map(|dir_entry| {
@@ -52,9 +52,7 @@ _num_app:
     .align 3
 app_{0}_start:
     .incbin "{2}{1}.elf"
-app_{0}_end:"#,
-            idx, app, TARGET_PATH
-        )?;
+app_{0}_end:"#, idx, app, TARGET_PATH)?;
     }
     Ok(())
 }
