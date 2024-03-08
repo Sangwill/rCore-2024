@@ -1,11 +1,18 @@
 //! Types related to task management
 use super::TaskContext;
+use crate::task::SYSCALL_NUM;
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
-
+#[derive(Copy, Clone, Default)]
+pub struct IDTimesPair {
+    /// syscall ID
+    pub syscall_id: usize,
+    /// corresponding syscall times
+    pub syscall_times: u32,
+}
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
     /// Save task context
@@ -13,6 +20,13 @@ pub struct TaskControlBlock {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+
+    /// the time when first called
+    pub first_call_time: usize,
+    /// Whether first call
+    pub first_call: bool,
+    /// syscall id and times
+    pub id_times_pairs: [IDTimesPair; SYSCALL_NUM],
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -55,9 +69,18 @@ impl TaskControlBlock {
             kernel_stack_top.into(),
             MapPermission::R | MapPermission::W,
         );
+        let id_list : [usize; SYSCALL_NUM] = [64, 93, 124, 169, 214, 215, 222, 410];
+        let mut id_times_pairs: [IDTimesPair; SYSCALL_NUM] = Default::default() ;
+        for idx in 0..8 {
+            id_times_pairs[idx].syscall_id = id_list[idx];
+            id_times_pairs[idx].syscall_times = 0;
+        }
         let task_control_block = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+            first_call_time: 0,
+            first_call: true,
+            id_times_pairs: id_times_pairs,
             memory_set,
             trap_cx_ppn,
             base_size: user_sp,
