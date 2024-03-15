@@ -1,14 +1,10 @@
 //! Process management syscalls
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    config::MAX_SYSCALL_NUM,
-    loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
-    task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
-    },
+    config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE}, loader::get_app_data_by_name, mm::{translated_refmut, translated_str, MemorySet, VirtAddr, KERNEL_SPACE}, sync::UPSafeCell, task::{
+        add_task, current_task, current_user_token, exit_current_and_run_next, kstack_alloc, pid_alloc, suspend_current_and_run_next,  TaskContext, TaskControlBlock, TaskControlBlockInner, TaskStatus
+    }, trap::{trap_handler, TrapContext}
 };
 
 #[repr(C)]
@@ -167,11 +163,59 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let task = current_task().unwrap();
+    // let mut parent_inner = task.inner_exclusive_access();
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(data) = get_app_data_by_name(path.as_str()){
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(data);
+        let trap_cx_ppn = memory_set
+                .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+                .unwrap()
+                .ppn();
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: task.inner_exclusive_access().base_size,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(&task)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    syscall_times: [0;MAX_SYSCALL_NUM],
+                    start_time: 0,
+                    stride: 0,
+                    priority: 16
+                })
+            },
+        });
+        task.inner_exclusive_access().children.push(task_control_block.clone());
+        
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // trap_cx.x[10] = 0;
+        let pid = task_control_block.pid.0;
+        add_task(task_control_block);
+        pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
