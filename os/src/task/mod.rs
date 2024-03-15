@@ -21,7 +21,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::loader::get_app_data_by_name;
+use crate::{config::MAX_SYSCALL_NUM, loader::get_app_data_by_name};
 use alloc::sync::Arc;
 use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
@@ -114,4 +114,24 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+
+/// get syscall times
+pub fn get_syscall_times() ->[u32; MAX_SYSCALL_NUM]{
+    let current = current_task().unwrap();
+    let times = current.get_syscall_times();
+    times
+}
+
+/// get time segment
+pub fn get_time_segment() -> usize {
+    let current = current_task().unwrap();
+    let seg = current.get_time_segment();
+    seg
+}
+
+/// update syscall times
+pub fn update_syscall_times(syscall_id: usize) {
+    let current = current_task().unwrap();
+    current.update_syscall_times(syscall_id);
 }

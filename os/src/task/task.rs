@@ -4,6 +4,7 @@ use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -33,6 +34,28 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+    /// get syscall times
+    pub fn get_syscall_times(&self) -> [u32;MAX_SYSCALL_NUM] {
+        let inner = self.inner_exclusive_access();
+        let mut syscall_times: [u32;MAX_SYSCALL_NUM] = [0;MAX_SYSCALL_NUM];
+        for (index, &times) in inner.syscall_times.iter().enumerate() {
+            syscall_times[index] = times;
+        }
+        syscall_times
+    }
+
+    /// get time segment
+    pub fn get_time_segment(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        let seg = get_time_ms() - inner.start_time;
+        seg
+    }
+
+    /// update syscall times
+    pub fn update_syscall_times(&self, syscall_id:usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.syscall_times[syscall_id] += 1;
     }
 }
 ///

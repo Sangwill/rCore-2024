@@ -2,9 +2,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE}, loader::get_app_data_by_name, mm::{translated_refmut, translated_str, MemorySet, VirtAddr, KERNEL_SPACE}, sync::UPSafeCell, task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next, kstack_alloc, pid_alloc, suspend_current_and_run_next,  TaskContext, TaskControlBlock, TaskControlBlockInner, TaskStatus
-    }, trap::{trap_handler, TrapContext}
+    config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE}, loader::get_app_data_by_name, mm::{translated_refmut, translated_str, MemorySet, PageTable, PhysAddr, VirtAddr, KERNEL_SPACE}, sync::UPSafeCell, task::{
+        add_task, current_task, current_user_token, exit_current_and_run_next, get_syscall_times, get_time_segment, kstack_alloc, pid_alloc, suspend_current_and_run_next, TaskContext, TaskControlBlock, TaskControlBlockInner, TaskStatus
+    }, timer::get_time_us, trap::{trap_handler, TrapContext}
 };
 
 #[repr(C)]
@@ -114,22 +114,42 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel: sys_get_time");
+    let us = get_time_us();
+    let time_value = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    
+    let vaddr = VirtAddr::from(_ts as usize);
+    let page_table = PageTable::from_token(current_user_token());
+    let ppn = page_table.translate(vaddr.floor()).unwrap().ppn();
+    let physical_addr = vaddr.page_offset() + PhysAddr::from(ppn).0;
+    let time_val_to_write = physical_addr as *mut TimeVal;
+    unsafe {
+        *time_val_to_write = time_value;
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let vaddr = VirtAddr::from(_ti as usize);
+    let page_table = PageTable::from_token(current_user_token());
+    let ppn = page_table.translate(vaddr.floor()).unwrap().ppn();
+    let physical_addr = vaddr.page_offset() + PhysAddr::from(ppn).0;
+    let task_info_to_write = physical_addr as *mut TaskInfo;
+    let info = TaskInfo {
+        status: TaskStatus::Running,
+        syscall_times: get_syscall_times(),
+        time: get_time_segment(),
+    };
+    unsafe {
+        *task_info_to_write = info;
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
