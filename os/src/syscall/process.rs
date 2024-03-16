@@ -2,7 +2,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE}, loader::get_app_data_by_name, mm::{translated_refmut, translated_str, MemorySet, PageTable, PhysAddr, VirtAddr, KERNEL_SPACE}, sync::UPSafeCell, task::{
+    config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE}, loader::get_app_data_by_name, mm::{translated_refmut, translated_str, MapPermission, MemorySet, PageTable, PhysAddr, VPNRange, VirtAddr, KERNEL_SPACE}, sync::UPSafeCell, task::{
         add_task, current_task, current_user_token, exit_current_and_run_next, get_syscall_times, get_time_segment, kstack_alloc, pid_alloc, suspend_current_and_run_next, TaskContext, TaskControlBlock, TaskControlBlockInner, TaskStatus
     }, timer::get_time_us, trap::{trap_handler, TrapContext}
 };
@@ -154,20 +154,54 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+    if (_port & !0x7 !=0) || (_port & 0x7 == 0) || 
+    (start_va.aligned() == false) {
+        return -1;
+    }
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let vpn_range = VPNRange::new(start_vpn, end_vpn);
+    for vpn in vpn_range {
+        if let Some(pte) = inner.memory_set.page_table.find_pte(vpn) {
+            if pte.is_valid() {
+                return -1;
+            }
+        }
+    }
+    let permission = MapPermission::from_bits((_port << 1) as u8).unwrap() | MapPermission::U;
+    inner.memory_set.insert_framed_area(start_va, end_va, permission);
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if VirtAddr::from(_start).aligned() == false {
+        return  -1;
+    }
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let vpn_range = VPNRange::new(start_vpn, end_vpn);
+    for vpn in vpn_range {
+        if let Some(pte) = inner.memory_set.page_table.find_pte(vpn) {
+            if !pte.is_valid() {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
+    }
+    for vpn in vpn_range {
+        inner.memory_set.page_table.unmap(vpn);
+    }
+    0
 }
 
 /// change data segment size
